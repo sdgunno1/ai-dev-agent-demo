@@ -14,6 +14,7 @@ export interface AiSlot<T> {
   status: Phase
   token: number
   startedAt: number
+  doneAt?: number
   seconds?: number
   stream?: string
   feedback?: string
@@ -43,6 +44,11 @@ export interface LogItem {
 }
 
 export const aiPending = (a?: { status: Phase }) => !!a && a.status !== 'done'
+
+/** AI 작업창은 답변이 끝난 뒤에도 잠깐(2초) 열어 두어 결과를 읽을 수 있게 한다 */
+export const AFTER_MS = 2000
+export const recentlyDone = (a?: { status: Phase; doneAt?: number }) => !!a && a.status === 'done' && !!a.doneAt && Date.now() - a.doneAt < AFTER_MS
+export const showConsole = (a?: { status: Phase; doneAt?: number }) => aiPending(a) || recentlyDone(a)
 const okOf = <T extends { ok: true }>(a?: AiSlot<T>): T | null => (a?.status === 'done' && a.result?.ok ? (a.result as T) : null)
 export const aiOk = (a?: AiState) => okOf(a)
 export const implOk = (a?: ImplState) => okOf(a)
@@ -237,7 +243,7 @@ export function AiBadge({ slots, count }: { slots: ({ status: Phase; seconds?: n
 }
 
 /** AI 작업창: AI가 쓰는 내용을 실시간으로 보여 준다 */
-export function AiConsole({ slot, preview, label }: { slot: { status: Phase; seconds?: number; startedAt: number }; preview: string; label: string }) {
+export function AiConsole({ slot, preview, label }: { slot: { status: Phase; seconds?: number; startedAt: number; doneAt?: number; result?: { ok: boolean } }; preview: string; label: string }) {
   useTick(aiPending(slot), 200)
   const ref = useRef<HTMLPreElement>(null)
   useEffect(() => {
@@ -245,11 +251,15 @@ export function AiConsole({ slot, preview, label }: { slot: { status: Phase; sec
   }, [preview])
   const live = slot.status === 'streaming'
   const idle = slot.status === 'waiting' || slot.status === 'calling' || slot.status === 'thinking'
+  const failed = slot.status === 'done' && slot.result?.ok === false
+  const elapsed = ((slot.doneAt ?? Date.now()) - slot.startedAt) / 1000
   return (
     <div className="console">
       <div className="console-top">
-        <span className={`live p-${slot.status}`}>{phaseText(slot)}</span>
-        <span className="mono">{label} · {since(slot.startedAt).toFixed(1)}초</span>
+        <span className={`live p-${failed ? 'failed' : slot.status}`}>
+          {slot.status !== 'done' ? phaseText(slot) : failed ? 'AI 응답 없음 · 시뮬레이션으로 진행' : '작성 완료 · 실행기 검사로 넘어갑니다'}
+        </span>
+        <span className="mono">{label} · {Math.max(0, elapsed).toFixed(1)}초</span>
       </div>
       <pre ref={ref}>
         {preview}

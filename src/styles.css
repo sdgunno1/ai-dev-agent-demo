@@ -534,3 +534,7 @@ mark.good { background: var(--green-tint); color: var(--green); padding: 0 4px; 
   .intake-row, .ask-f { flex-wrap: wrap; }
   .intake-row .btn, .ask-f .btn { width: 100%; }
 }
+.console-top .live.p-done { color: #5bd17d; }
+.console-top .live.p-done::before { background: #5bd17d; animation: none; }
+.console-top .live.p-failed { color: #f0b04a; }
+.console-top .live.p-failed::before { background: #f0b04a; animation: none; }

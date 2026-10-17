@@ -10,7 +10,7 @@ import ModelInfo from './pages/ModelInfo'
 import { Icon } from './ui'
 import { clearAiCache, getCachedDesign, getCachedImpl, runAsk, runDesign, runImpl } from './liveAi'
 import type { AiFailure, AiProgress, AiResult } from './liveAi'
-import { aiOk, aiPending, askContext, implTarget, lastFeedback, predictedFacts, reqTexts, throttleProgress, toAiIssue } from './aiView'
+import { aiOk, aiPending, askContext, implTarget, lastFeedback, predictedFacts, reqTexts, showConsole, throttleProgress, toAiIssue } from './aiView'
 import type { AiState, ImplState, LogItem, Phase, QaItem } from './aiView'
 
 export type Page = 'input' | 'process' | 'result' | 'report' | 'model'
@@ -117,8 +117,8 @@ export default function App() {
       logAi(id, feedback ? '설계 재작성 (반려 사유 반영)' : '설계 · 위험 등급 · 배포 요약', res, startedAt)
       patch(a =>
         !res.ok && feedback && a.result?.ok
-          ? { ...a, status: 'done', feedback: undefined, note: '반려 사유 반영 재호출 실패 → 이전 AI 설계 유지' }
-          : { ...a, status: 'done', result: res, note: undefined },
+          ? { ...a, status: 'done', doneAt: Date.now(), feedback: undefined, note: '반려 사유 반영 재호출 실패 → 이전 AI 설계 유지' }
+          : { ...a, status: 'done', doneAt: Date.now(), result: res, note: undefined },
       )
     })
   }
@@ -136,7 +136,7 @@ export default function App() {
     runImpl(toAiIssue(issue), reqs, t.file, t.api, t.others, progress(u => patch(a => (a.status === 'done' ? a : { ...a, ...u })))).then(res => {
       if (gen.current !== my || implRef.current[id]?.token !== token) return
       logAi(id, '코드 · API 테스트 요청 · 자기 리뷰', res, startedAt)
-      patch(a => ({ ...a, status: 'done', result: res }))
+      patch(a => ({ ...a, status: 'done', doneAt: Date.now(), result: res }))
     })
   }
 
@@ -184,9 +184,9 @@ export default function App() {
   // 시뮬레이션 진행 박자
   useEffect(() => {
     if (!Object.values(runs).some(r => r.status === 'running')) return
-    // 설계(S02) · 첫 구현(S07)은 AI 응답이 올 때까지 끝내지 않는다
+    // 설계(S02) · 첫 구현(S07)은 AI 응답이 끝나고 작업창을 2초 더 보여 준 뒤에 넘어간다
     const hold = (k: string, r: Run) =>
-      (r.current?.ev.stage === 'S02' && aiPending(aiRef.current[k])) || (r.current?.ev.stage === 'S07' && r.current.attempt === 1 && aiPending(implRef.current[k]))
+      (r.current?.ev.stage === 'S02' && showConsole(aiRef.current[k])) || (r.current?.ev.stage === 'S07' && r.current.attempt === 1 && showConsole(implRef.current[k]))
     const t = setTimeout(() => setRuns(rs => Object.fromEntries(Object.entries(rs).map(([k, r]) => [k, hold(k, r) ? r : step(r)]))), DELAY[speed])
     return () => clearTimeout(t)
   }, [runs, speed])

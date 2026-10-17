@@ -9,7 +9,7 @@ import { Badge, Icon, PRIORITY_KO, RiskBadge, Seg, StatusBadge, deptOf } from '.
 import { ReleaseCard } from './Release'
 import {
   AiActivityBar, AiBadge, AiConsole, AiRequirements, AiResultCard, AiRiskDetail, AskBox, CheckLine, ImplDetail,
-  aiChecks, aiNodeMarks, aiOk, aiPending, implOk, implTarget, logTone, noteWithAi, summaryView, throttleProgress,
+  AFTER_MS, aiChecks, aiNodeMarks, aiOk, aiPending, implOk, implTarget, logTone, noteWithAi, showConsole, summaryView, throttleProgress,
 } from '../aiView'
 import type { Phase } from '../aiView'
 import { previewDesign, previewImpl, previewIntake, runIntake } from '../liveAi'
@@ -155,7 +155,7 @@ function InputSection({ ctx, issue, onSelect, onStart }: { ctx: Ctx; issue: Issu
   const [form, setForm] = useState({ type: 'feature' as IssueType, title: '', acs: '', desc: '' })
   const [err, setErr] = useState('')
   const [sentence, setSentence] = useState('')
-  const [intake, setIntake] = useState<{ status: Phase; startedAt: number; seconds?: number; stream?: string; result?: IntakeResult | AiFailure } | null>(null)
+  const [intake, setIntake] = useState<{ status: Phase; startedAt: number; doneAt?: number; seconds?: number; stream?: string; result?: IntakeResult | AiFailure } | null>(null)
   const drafting = !!intake && aiPending(intake)
 
   // 한 문장 요청 → AI가 제목 · 유형 · 수용 기준을 실시간으로 작성
@@ -166,7 +166,9 @@ function InputSection({ ctx, issue, onSelect, onStart }: { ctx: Ctx; issue: Issu
       sentence,
       throttleProgress(p => setIntake(s => (s && s.status !== 'done' ? { ...s, status: p.phase, seconds: p.seconds, stream: p.text ?? s.stream } : s))),
     ).then(res => {
-      setIntake(s => (s ? { ...s, status: 'done', result: res } : s))
+      setIntake(s => (s ? { ...s, status: 'done', doneAt: Date.now(), result: res } : s))
+      // 작업창을 2초 더 보여 준 뒤 닫는다
+      setTimeout(() => setIntake(s => (s ? { ...s } : s)), AFTER_MS + 50)
       if (res.ok) {
         setForm({ type: res.type, title: res.title, acs: res.ac.join('\n'), desc: res.description })
         setErr('')
@@ -237,7 +239,7 @@ function InputSection({ ctx, issue, onSelect, onStart }: { ctx: Ctx; issue: Issu
                     AI로 이슈 작성
                   </button>
                 </div>
-                {intake && drafting && <AiConsole slot={intake} preview={previewIntake(intake.stream ?? '')} label="이슈 초안" />}
+                {intake && showConsole(intake) && <AiConsole slot={intake} preview={previewIntake(intake.stream ?? '')} label="이슈 초안" />}
                 {intake?.result?.ok && (
                   <div className="intake-checks">
                     <span className="chip c-green">
@@ -442,10 +444,10 @@ function Activity({ ctx, issue, run }: { ctx: Ctx; issue: Issue; run?: Run }) {
             </div>
           </div>
         )}
-        {!run.gate && curStage === 'S02' && aiState && aiPending(aiState) && (
+        {!run.gate && curStage === 'S02' && aiState && showConsole(aiState) && (
           <AiConsole slot={aiState} preview={previewDesign(aiState.stream ?? '')} label="설계 · 위험 · 요약" />
         )}
-        {!run.gate && curStage === 'S07' && run.current?.attempt === 1 && implState && aiPending(implState) && (
+        {!run.gate && curStage === 'S07' && run.current?.attempt === 1 && implState && showConsole(implState) && (
           <AiConsole slot={implState} preview={previewImpl(implState.stream ?? '', implTarget(issue).file)} label="코드 · API · 리뷰" />
         )}
         {!run.gate && last && (
