@@ -3,6 +3,7 @@ import type { Ctx } from '../App'
 import type { Issue } from '../data'
 import { artifactsOf, hm, implToReadyMinutes } from '../engine'
 import type { Run } from '../engine'
+import { aiOk, summaryView } from '../aiView'
 
 function summaryOf(issue: Issue, run: Run) {
   const art = artifactsOf(issue)
@@ -23,6 +24,8 @@ export function ReleaseCard({ ctx, issue, run }: { ctx: Ctx; issue: Issue; run: 
   const g4 = run.approvals.filter(a => a.gate === 'G4').slice(-1)[0]
   const id = issue.issue_id
   const reqAt = run.gate?.simStart ?? run.history.find(h => h.stage === 'G4')?.start
+  const ok = aiOk(ctx.ai[id])
+  const sv = ok ? summaryView(issue, run, ok) : null
 
   return (
     <div className="msg">
@@ -37,8 +40,15 @@ export function ReleaseCard({ ctx, issue, run }: { ctx: Ctx; issue: Issue; run: 
           [G4 배포 승인 요청] {id} {issue.title}
         </h3>
         <p className="msg-sub">
-          위험 등급 {run.risk} · S07~S13 소요 {s.mins ? Math.round(s.mins) : '—'}분 · 되돌림 {run.rollbacks}회
+          위험 등급 {run.risk}
+          {ok && ok.risk !== run.risk ? ` (AI 판정 ${ok.risk})` : ''} · S07~S13 소요 {s.mins ? Math.round(s.mins) : '—'}분 · 되돌림 {run.rollbacks}회
         </p>
+        {sv && (
+          <div className="msg-summary">
+            {sv.text}
+            <small>{sv.fromAi ? '실제 AI 작성 · 숫자 대조 통과' : '템플릿 요약 · AI 요약에 실제 값에 없는 숫자가 있어 대체함'}</small>
+          </div>
+        )}
         <ul className="msg-list">
           <li className="ok">
             ✓ 변경 파일 {s.files.length}개 (백엔드 {s.backend}

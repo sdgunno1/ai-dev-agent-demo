@@ -94,6 +94,14 @@ export default function ModelInfo() {
         </div>
       </Card>
 
+      <Card title="프로토타입 연동">
+        <ul className="plain proto">
+          <li>이 시연은 설계 요구사항 · 위험 등급 · 배포 요약 3곳에서 실제 AI(GPT-OSS 20B, Pollinations 무료 공개 API)를 호출합니다.</li>
+          <li>AI 결과는 실행기 검사(요구사항 반영 · 근거 인용 · 숫자 대조)를 거친 뒤에만 쓰고, 위험 등급은 규칙 판정보다 낮아지지 않습니다.</li>
+          <li>실제 도입 시에는 호출 주소만 사내 Qwen 서버로 바꾸면 됩니다.</li>
+        </ul>
+      </Card>
+
       <Card title="AI 결과를 믿을 수 있게 만드는 장치">
         <div className="guards">
           <div><b>실행으로 판정</b><span>AI의 말이 아니라 빌드 · API 재생 · 화면 시험 결과로 통과를 결정</span></div>
@@ -103,7 +111,7 @@ export default function ModelInfo() {
         </div>
       </Card>
 
-      <p className="foot-note">※ 본 프로토타입은 실제 AI 대신 시범 실행 결과 데이터로 공정을 시뮬레이션합니다. 이슈 · 코드 · 인물 · 조직 정보는 모두 가상 데이터입니다.</p>
+      <p className="foot-note">※ 본 프로토타입은 설계 요구사항 · 위험 등급 · 배포 요약을 실제 AI로 생성하고, 구현 · 테스트 등 나머지 단계는 시범 실행 결과 데이터로 시뮬레이션합니다. 이슈 · 코드 · 인물 · 조직 정보는 모두 가상 데이터입니다.</p>
     </div>
   )
 }

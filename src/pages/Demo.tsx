@@ -7,6 +7,7 @@ import { artifactsOf, hm, implToReadyMinutes, riskOf } from '../engine'
 import type { Run } from '../engine'
 import { Badge, Icon, PRIORITY_KO, RiskBadge, Seg, StatusBadge, deptOf } from '../ui'
 import { ReleaseCard } from './Release'
+import { AiBadge, AiRequirements, AiResultCard, AiRiskDetail, AiWaitNote, CheckLine, aiOk, aiPending, noteWithAi, summaryView } from '../aiView'
 
 // 흐름도에 보이는 핵심 단계 — 세부 단계(S03~S06, S10, S11 등)는 묶어서 표시
 const NODES: { label: string; actor: string; gate?: boolean; stages: StageId[] }[] = [
@@ -294,8 +295,10 @@ function Flow({ run }: { run?: Run }) {
 
 function Controls({ ctx, issue, run }: { ctx: Ctx; issue: Issue; run: Run }) {
   const id = issue.issue_id
+  const pending = aiPending(ctx.ai[id])
   return (
     <div className="controls">
+      <AiBadge state={ctx.ai[id]} />
       <Seg<Speed> value={ctx.speed} onChange={ctx.setSpeed} options={[['slow', '느리게'], ['normal', '보통'], ['fast', '빠르게']]} />
       {run.status === 'running' && (
         <button className="icobtn" title="일시정지" onClick={() => ctx.pause(id, true)}>
@@ -308,7 +311,7 @@ function Controls({ ctx, issue, run }: { ctx: Ctx; issue: Issue; run: Run }) {
         </button>
       )}
       {run.status !== 'done' && (
-        <button className="btn sm" onClick={() => ctx.finishNow(id)}>
+        <button className="btn sm" disabled={pending} title={pending ? 'AI 응답을 기다리는 중입니다' : undefined} onClick={() => ctx.finishNow(id)}>
           <Icon name="skip" className="ico-xs" /> 결과 바로 보기
         </button>
       )}
@@ -337,7 +340,10 @@ function Activity({ ctx, issue, run }: { ctx: Ctx; issue: Issue; run?: Run }) {
     )
   }
 
+  const aiState = ctx.ai[issue.issue_id]
+  const ok = aiOk(aiState)
   const last = [...run.history].reverse().find(h => h.result !== 'skip')
+  const sv = ok ? summaryView(issue, run, ok) : null
   const curStage = run.current?.ev.stage ?? (run.status === 'running' ? run.queue.find(e => e.result !== 'skip')?.stage : undefined)
   return (
     <div className="activity">
@@ -367,6 +373,7 @@ function Activity({ ctx, issue, run }: { ctx: Ctx; issue: Issue; run?: Run }) {
                   <dd>{STAGE_INFO[curStage].judge}</dd>
                 </dl>
               )}
+              {curStage === 'S02' && <AiWaitNote state={aiState} />}
             </div>
           </div>
         )}
@@ -377,7 +384,9 @@ function Activity({ ctx, issue, run }: { ctx: Ctx; issue: Issue; run?: Run }) {
               {STAGE_INFO[last.stage].name}
               {last.attempt > 1 && ` ${last.attempt}차`}
             </b>
-            <span>{last.note}</span>
+            <span>{noteWithAi(last.stage, last.note, issue, run, ok)}</span>
+            {last.stage === 'S03' && ok && <AiRiskDetail res={ok} />}
+            {last.stage === 'S13' && sv && <CheckLine c={sv.check} />}
             {last.routeTo && <span className="back-note">↩ {STAGE_INFO[last.routeTo].name} 단계로 되돌려 다시 수정합니다</span>}
           </div>
         )}
@@ -391,12 +400,12 @@ function Activity({ ctx, issue, run }: { ctx: Ctx; issue: Issue; run?: Run }) {
           {run.history
             .filter(h => h.result !== 'skip')
             .map((h, k) => (
-              <li key={k} className={`r-${h.result}`}>
+              <li key={k} className={`r-${h.stage === 'S13' && sv && !sv.fromAi ? 'findings' : h.result}`}>
                 <span className="mono">{hm(h.end)}</span>
                 <span className="lg-dot" />
                 <span>
                   <b>{STAGE_INFO[h.stage].name}</b>
-                  {h.attempt > 1 && <em> {h.attempt}차</em>} {h.note}
+                  {h.attempt > 1 && <em> {h.attempt}차</em>} {noteWithAi(h.stage, h.note, issue, run, ok)}
                 </span>
               </li>
             ))}
@@ -412,6 +421,8 @@ function GatePanel({ ctx, issue, run }: { ctx: Ctx; issue: Issue; run: Run }) {
   const [reason, setReason] = useState('')
   const art = artifactsOf(issue)
   const id = issue.issue_id
+  const aiState = ctx.ai[id]
+  const ok = aiOk(aiState)
   const approve = () => ctx.gateAction(id, { type: 'approve' })
   const reject = () => {
     if (!reason.trim()) return
@@ -462,12 +473,18 @@ function GatePanel({ ctx, issue, run }: { ctx: Ctx; issue: Issue; run: Run }) {
       </div>
       <div className="gate-body">
         <div>
-          <h4>요구사항</h4>
-          <ol className="plain num">
-            {art.requirements.slice(0, 4).map(r => (
-              <li key={r}>{r}</li>
-            ))}
-          </ol>
+          <h4>
+            요구사항 {ok ? <Badge tone="green">실제 AI 작성</Badge> : aiState && <Badge tone="gray">시뮬레이션</Badge>}
+          </h4>
+          {ok ? (
+            <AiRequirements res={ok} state={aiState} />
+          ) : (
+            <ol className="plain num">
+              {art.requirements.slice(0, 4).map(r => (
+                <li key={r}>{r}</li>
+              ))}
+            </ol>
+          )}
           <h4>바꿀 파일 · 레포 대조 완료</h4>
           <div className="file-chips">
             {art.files[0].map(f => (
@@ -577,6 +594,7 @@ function Results({ ctx, issue, run }: { ctx: Ctx; issue: Issue; run?: Run }) {
   const mins = implToReadyMinutes(run)
   const g4 = run.approvals.filter(a => a.gate === 'G4').slice(-1)[0]
   return (
+    <>
     <div className="panel">
       <div className="kpis">
         <div className="kpi">
@@ -634,5 +652,7 @@ function Results({ ctx, issue, run }: { ctx: Ctx; issue: Issue; run?: Run }) {
         </div>
       </div>
     </div>
+    <AiResultCard issue={issue} run={run} state={ctx.ai[issue.issue_id]} />
+    </>
   )
 }
