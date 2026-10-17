@@ -5,7 +5,7 @@ import type { Issue } from './data'
 import { artifactsOf, buildScenario } from './engine'
 import type { Run } from './engine'
 import { MODEL_LABEL, checkNumbers, compareRisk, templateSummary } from './liveAi'
-import type { AiFacts, AiFailure, AiIssue, AiProgress, AiResult, AskContext, AskResult, Check, ImplResult } from './liveAi'
+import type { AiFacts, AiFailure, AiIssue, AiProgress, AiResult, AskContext, AskResult, Check, ImplResult, ReviewResult } from './liveAi'
 import { Badge, Card } from './ui'
 
 export type Phase = 'waiting' | 'calling' | 'thinking' | 'streaming' | 'done'
@@ -23,6 +23,7 @@ export interface AiSlot<T> {
 }
 export type AiState = AiSlot<AiResult>
 export type ImplState = AiSlot<ImplResult>
+export type ReviewState = AiSlot<ReviewResult>
 
 export interface QaItem {
   id: number
@@ -52,6 +53,7 @@ export const showConsole = (a?: { status: Phase; doneAt?: number }) => aiPending
 const okOf = <T extends { ok: true }>(a?: AiSlot<T>): T | null => (a?.status === 'done' && a.result?.ok ? (a.result as T) : null)
 export const aiOk = (a?: AiState) => okOf(a)
 export const implOk = (a?: ImplState) => okOf(a)
+export const reviewOk = (a?: ReviewState) => okOf(a)
 
 /** 실시간 조각이 초당 수십 번 오므로 화면 갱신은 80ms에 한 번으로 묶는다 */
 export function throttleProgress(f: (p: AiProgress) => void) {
@@ -128,10 +130,10 @@ export function summaryView(issue: Issue, run: Run, res: AiResult) {
   return { fromAi: check.pass, text: check.pass ? res.aiSummary : templateSummary(toAiIssue(issue), facts), check }
 }
 
-const held = (im: ImplResult) => im.review.filter(f => !f.kept).length
+const held = (rv: ReviewResult) => rv.findings.filter(f => !f.kept).length
 
 /** 실행 로그 · 방금 완료 상자에 AI 결과를 덧붙인 문구 */
-export function noteWithAi(h: { stage: string; note: string; attempt: number }, issue: Issue, run: Run, d: AiResult | null, im: ImplResult | null) {
+export function noteWithAi(h: { stage: string; note: string; attempt: number }, issue: Issue, run: Run, d: AiResult | null, im: ImplResult | null, rv: ReviewResult | null) {
   const { stage, note, attempt } = h
   if (d && stage === 'S02') return `${note} · 실제 AI 요구사항 ${d.requirements.length}개`
   if (d && stage === 'S03') {
@@ -140,16 +142,16 @@ export function noteWithAi(h: { stage: string; note: string; attempt: number }, 
   }
   if (im && stage === 'S07' && attempt === 1) return `${note} · 실제 AI 코드 ${im.code.split('\n').length}줄`
   if (im && stage === 'S07c' && im.apiRequests.length) return `AI가 만든 API 테스트 요청 ${im.apiRequests.length}건 재생 통과`
-  if (im && stage === 'S08' && attempt === 1) return `AI 자기 리뷰 지적 ${im.review.length}건: 반영 ${im.review.length - held(im)} · 보류 ${held(im)}`
+  if (rv && stage === 'S08' && attempt === 1) return `AI 리뷰 지적 ${rv.findings.length}건: 반영 ${rv.findings.length - held(rv)} · 보류 ${held(rv)}`
   if (d && stage === 'S13')
     return summaryView(issue, run, d).fromAi ? note.replace('배포 준비 요약 생성', '배포 준비 요약 생성(실제 AI)') : 'AI 요약 숫자 불일치 → 템플릿 요약으로 대체 → G4 요청'
   return note
 }
 
 /** 로그 점 색: AI 검사 결과가 주의면 주황 */
-export function logTone(h: { stage: string; result?: string; attempt: number }, issue: Issue, run: Run, d: AiResult | null, im: ImplResult | null) {
+export function logTone(h: { stage: string; result?: string; attempt: number }, issue: Issue, run: Run, d: AiResult | null, rv: ReviewResult | null) {
   if (d && h.stage === 'S13' && !summaryView(issue, run, d).fromAi) return 'findings'
-  if (im && h.stage === 'S08' && h.attempt === 1) return held(im) ? 'findings' : 'pass'
+  if (rv && h.stage === 'S08' && h.attempt === 1) return held(rv) ? 'findings' : 'pass'
   return h.result ?? 'pass'
 }
 
@@ -160,7 +162,7 @@ export interface CheckRow {
 }
 
 /** 이 이슈에서 실제 AI 결과에 대해 실행기가 한 검사 목록 */
-export function aiChecks(issue: Issue, run: Run | undefined, d: AiResult | null, im: ImplResult | null): CheckRow[] {
+export function aiChecks(issue: Issue, run: Run | undefined, d: AiResult | null, im: ImplResult | null, rv: ReviewResult | null): CheckRow[] {
   const rows: CheckRow[] = []
   if (issue.aiDraft) issue.aiDraft.checks.forEach((c, i) => rows.push({ label: i ? '이슈 초안 · 모호한 표현' : '이슈 초안 · 기준 개수', ...c }))
   if (d) {
@@ -170,25 +172,27 @@ export function aiChecks(issue: Issue, run: Run | undefined, d: AiResult | null,
       rows.push({ label: '위험 등급 비교', pass: c.tone === 'green', detail: `AI ${d.risk} · 규칙 ${run.risk} → ${c.text}` })
     }
   }
-  if (im) rows.push({ label: '코드 추적 주석', ...im.checks.tags }, { label: 'API 요청 범위', ...im.checks.api }, { label: '리뷰 인용 확인', ...im.checks.review })
+  if (im) rows.push({ label: '코드 추적 주석', ...im.checks.tags }, { label: 'API 요청 범위', ...im.checks.api })
+  if (rv) rows.push({ label: '리뷰 인용 확인', ...rv.check })
   if (d && run?.history.some(h => h.stage === 'S13')) rows.push({ label: '요약 숫자 대조', ...summaryView(issue, run, d).check })
   return rows
 }
 
 /** 흐름도에서 실제 AI가 일한 노드 · 지금 일하는 노드 */
-export function aiNodeMarks(issue: Issue, run: Run | undefined, design: AiState | undefined, impl: ImplState | undefined, at: number) {
+export function aiNodeMarks(issue: Issue, run: Run | undefined, design: AiState | undefined, impl: ImplState | undefined, review: ReviewState | undefined, at: number) {
   const d = aiOk(design)
   const im = implOk(impl)
+  const rv = reviewOk(review)
   const marks = new Set<number>()
   const add = (i: number, on: boolean) => on && i <= at && marks.add(i)
   add(0, !!issue.aiDraft)
   add(1, !!d)
   add(3, !!d || !!im)
   add(4, !!im?.apiRequests.length)
-  add(5, !!im?.review.length)
+  add(5, !!rv)
   add(7, !!d)
   const s = run?.current?.ev.stage
-  const working = s === 'S02' && aiPending(design) ? 1 : s === 'S07' && aiPending(impl) ? 3 : undefined
+  const working = s === 'S02' && aiPending(design) ? 1 : s === 'S07' && aiPending(impl) ? 3 : s === 'S08' && aiPending(review) ? 5 : undefined
   return { marks, working }
 }
 
@@ -344,16 +348,23 @@ export function ImplDetail({ stage, im }: { stage: string; im: ImplResult }) {
         <CheckLine c={im.checks.api} />
       </>
     )
+  return null
+}
+
+/** AI 리뷰 단계가 끝났을 때 "방금 완료" 상자에 붙는 내용 */
+export function ReviewDetail({ rv }: { rv: ReviewResult }) {
   return (
     <>
       <span className="mini-list">
-        {im.review.map(f => (
+        {rv.findings.map(f => (
           <span key={f.id}>
-            <b className="mono">{f.id}</b> {f.message} <em className={f.kept ? 'ok' : 'warn'}>{f.kept ? '반영' : '보류'}</em>
+            <b className="mono">{f.id}</b>
+            {f.severity ? `[${f.severity}] ` : ''}
+            {f.message} <em className={f.kept ? 'ok' : 'warn'}>{f.kept ? '반영' : '보류'}</em>
           </span>
         ))}
       </span>
-      <CheckLine c={im.checks.review} />
+      <CheckLine c={rv.check} />
     </>
   )
 }
@@ -429,16 +440,17 @@ export function AiActivityBar({ calls, kinds, rows, working }: { calls: number; 
 }
 
 /** 결과 화면 맨 아래 카드 */
-export function AiResultCard({ issue, run, design, impl, qa, log }: { issue: Issue; run: Run; design?: AiState; impl?: ImplState; qa: QaItem[]; log: LogItem[] }) {
-  const [open, setOpen] = useState<'' | 'code' | 'd' | 'i'>('')
+export function AiResultCard({ issue, run, design, impl, review, qa, log }: { issue: Issue; run: Run; design?: AiState; impl?: ImplState; review?: ReviewState; qa: QaItem[]; log: LogItem[] }) {
+  const [open, setOpen] = useState<'' | 'code' | 'd' | 'i' | 'r'>('')
   const d = aiOk(design)
   const im = implOk(impl)
-  const rows = aiChecks(issue, run, d, im)
+  const rv = reviewOk(review)
+  const rows = aiChecks(issue, run, d, im, rv)
   const answered = qa.filter(i => i.result?.ok)
-  const fails = [design, impl].filter(s => s?.result && !s.result.ok) as AiSlot<unknown>[]
+  const fails = [design, impl, review].filter(s => s?.result && !s.result.ok) as AiSlot<unknown>[]
   const toggle = (k: typeof open) => setOpen(o => (o === k ? '' : k))
   return (
-    <Card title="실제 AI 처리 내역" extra={<AiBadge slots={[design, impl]} count={log.filter(l => l.ok).length} />}>
+    <Card title="실제 AI 처리 내역" extra={<AiBadge slots={[design, impl, review]} count={log.filter(l => l.ok).length} />}>
       <p className="ai-meta">
         {MODEL_LABEL} · Pollinations 무료 공개 API(키 없음) · 응답 {log.filter(l => l.ok).length}건 · 실시간 생성
       </p>
@@ -502,6 +514,11 @@ export function AiResultCard({ issue, run, design, impl, qa, log }: { issue: Iss
             구현 응답 원문
           </button>
         )}
+        {review?.result?.raw && (
+          <button className="btn sm" onClick={() => toggle('r')}>
+            리뷰 응답 원문
+          </button>
+        )}
       </div>
       {open === 'code' && im && (
         <>
@@ -511,6 +528,7 @@ export function AiResultCard({ issue, run, design, impl, qa, log }: { issue: Iss
       )}
       {open === 'd' && design?.result?.raw && <pre className="ai-raw">{pretty(design.result.raw)}</pre>}
       {open === 'i' && impl?.result?.raw && <pre className="ai-raw">{impl.result.raw}</pre>}
+      {open === 'r' && review?.result?.raw && <pre className="ai-raw">{pretty(review.result.raw)}</pre>}
     </Card>
   )
 }

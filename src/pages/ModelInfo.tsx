@@ -96,7 +96,7 @@ export default function ModelInfo() {
 
       <Card title="프로토타입 연동">
         <ul className="plain proto">
-          <li>실제 AI(GPT-OSS 20B, Pollinations 무료 공개 API)가 만드는 것: 이슈 초안 · 설계 요구사항 · 위험 등급 · 코드 변경안 · API 테스트 요청 · 자기 리뷰 · 배포 요약 · PL 질문 답변.</li>
+          <li>실제 AI(GPT-OSS 20B, Pollinations 무료 공개 API)가 만드는 것: 이슈 초안 · 설계 요구사항 · 위험 등급 · 코드 변경안 · API 테스트 요청 · 코드 리뷰(구현 코드를 별도 호출이 검토) · 배포 요약 · PL 질문 답변.</li>
           <li>AI가 쓰는 과정은 실시간으로 화면에 보여 주고, 결과는 실행기 검사(요구사항 반영 · 근거 인용 · 추적 주석 · 리뷰 인용 · 숫자 대조 · 언급한 파일 · API 대조)를 거친 뒤에만 씁니다. 위험 등급은 규칙 판정보다 낮아지지 않습니다.</li>
           <li>빌드 · 테스트 실행은 시뮬레이션입니다. 실제 도입 시에는 호출 주소만 사내 Qwen 서버로 바꾸면 됩니다.</li>
         </ul>

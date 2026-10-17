@@ -8,10 +8,10 @@ import type { Step } from './pages/Demo'
 import Report from './pages/Report'
 import ModelInfo from './pages/ModelInfo'
 import { Icon } from './ui'
-import { clearAiCache, getCachedDesign, getCachedImpl, runAsk, runDesign, runImpl } from './liveAi'
-import type { AiFailure, AiProgress, AiResult } from './liveAi'
+import { clearAiCache, getCachedDesign, getCachedImpl, getCachedReview, runAsk, runDesign, runImpl, runReview } from './liveAi'
+import type { AiFailure, AiProgress, AiResult, ImplResult } from './liveAi'
 import { aiOk, aiPending, askContext, implTarget, lastFeedback, predictedFacts, reqTexts, showConsole, throttleProgress, toAiIssue } from './aiView'
-import type { AiState, ImplState, LogItem, Phase, QaItem } from './aiView'
+import type { AiState, ImplState, LogItem, Phase, QaItem, ReviewState } from './aiView'
 
 export type Page = 'input' | 'process' | 'result' | 'report' | 'model'
 export type Speed = 'slow' | 'normal' | 'fast'
@@ -21,6 +21,7 @@ export interface Ctx {
   runs: Record<string, Run>
   ai: Record<string, AiState>
   impl: Record<string, ImplState>
+  review: Record<string, ReviewState>
   qa: Record<string, QaItem[]>
   aiLog: Record<string, LogItem[]>
   speed: Speed
@@ -81,13 +82,16 @@ export default function App() {
   const [focusId, setFocusId] = useState(route.id ?? 'ISSUE-1042')
   const [ai, setAi] = useState<Record<string, AiState>>({})
   const [impl, setImpl] = useState<Record<string, ImplState>>({})
+  const [review, setReview] = useState<Record<string, ReviewState>>({})
   const [qa, setQa] = useState<Record<string, QaItem[]>>(init.qa)
   const [aiLog, setAiLog] = useState<Record<string, LogItem[]>>(init.aiLog)
   const aiRef = useRef(ai)
   const implRef = useRef(impl)
+  const reviewRef = useRef(review)
   const gen = useRef(0)
   aiRef.current = ai
   implRef.current = impl
+  reviewRef.current = review
 
   const logAi = (id: string, kind: string, res: Outcome, startedAt: number) =>
     setAiLog(s => ({
@@ -123,7 +127,7 @@ export default function App() {
     })
   }
 
-  // ② 구현 호출 — 설계 승인 직후 1번: 코드 변경안 · API 테스트 요청 · 자기 리뷰
+  // ② 구현 호출 — 설계 승인 직후 1번: 코드 변경안 · API 테스트 요청 (끝나면 ③ AI 리뷰 호출로 이어짐)
   const callImpl = (issue: Issue, design?: AiResult | null) => {
     const id = issue.issue_id
     const token = Date.now() + Math.random()
@@ -135,7 +139,24 @@ export default function App() {
     setImpl(s => ({ ...s, [id]: { status: 'calling', token, startedAt } }))
     runImpl(toAiIssue(issue), reqs, t.file, t.api, t.others, progress(u => patch(a => (a.status === 'done' ? a : { ...a, ...u })))).then(res => {
       if (gen.current !== my || implRef.current[id]?.token !== token) return
-      logAi(id, '코드 · API 테스트 요청 · 자기 리뷰', res, startedAt)
+      logAi(id, '코드 · API 테스트 요청', res, startedAt)
+      patch(a => ({ ...a, status: 'done', doneAt: Date.now(), result: res }))
+      if (res.ok) callReview(issue, res, design)
+    })
+  }
+
+  // ③ AI 리뷰 호출 — 구현 호출이 쓴 코드를 다른 호출이 읽고 결함을 지적
+  const callReview = (issue: Issue, im: ImplResult, design?: AiResult | null) => {
+    const id = issue.issue_id
+    const token = Date.now() + Math.random()
+    const startedAt = Date.now()
+    const my = gen.current
+    const reqs = reqTexts(issue, design === undefined ? aiOk(aiRef.current[id]) : design)
+    const patch = (f: (a: ReviewState) => ReviewState) => setReview(s => (s[id]?.token === token ? { ...s, [id]: f(s[id]) } : s))
+    setReview(s => ({ ...s, [id]: { status: 'calling', token, startedAt } }))
+    runReview(toAiIssue(issue), reqs, im.file, im.code, progress(u => patch(a => (a.status === 'done' ? a : { ...a, ...u })))).then(res => {
+      if (gen.current !== my || reviewRef.current[id]?.token !== token) return
+      logAi(id, 'AI 리뷰 (구현 코드 검토)', res, startedAt)
       patch(a => ({ ...a, status: 'done', doneAt: Date.now(), result: res }))
     })
   }
@@ -167,8 +188,14 @@ export default function App() {
       if (!r.approvals.some(a => a.gate === 'G1' && a.decision === 'approved')) return
       const t = implTarget(issue)
       const ih = getCachedImpl(toAiIssue(issue), reqTexts(issue, hit), t.file)
-      if (ih) setImpl(s => ({ ...s, [r.issueId]: { status: 'done', token: 0, startedAt: 0, result: ih } }))
-      else if (r.status !== 'done') callImpl(issue, hit)
+      if (!ih) {
+        if (r.status !== 'done') callImpl(issue, hit)
+        return
+      }
+      setImpl(s => ({ ...s, [r.issueId]: { status: 'done', token: 0, startedAt: 0, result: ih } }))
+      const rh = getCachedReview(toAiIssue(issue), ih.code)
+      if (rh) setReview(s => ({ ...s, [r.issueId]: { status: 'done', token: 0, startedAt: 0, result: rh } }))
+      else if (r.status !== 'done') callReview(issue, ih, hit)
     })
   }, [])
 
@@ -184,9 +211,12 @@ export default function App() {
   // 시뮬레이션 진행 박자
   useEffect(() => {
     if (!Object.values(runs).some(r => r.status === 'running')) return
-    // 설계(S02) · 첫 구현(S07)은 AI 응답이 끝나고 작업창을 2초 더 보여 준 뒤에 넘어간다
-    const hold = (k: string, r: Run) =>
-      (r.current?.ev.stage === 'S02' && showConsole(aiRef.current[k])) || (r.current?.ev.stage === 'S07' && r.current.attempt === 1 && showConsole(implRef.current[k]))
+    // 설계(S02) · 첫 구현(S07) · 첫 AI 리뷰(S08)는 AI 응답이 끝나고 작업창을 2초 더 보여 준 뒤에 넘어간다
+    const hold = (k: string, r: Run) => {
+      const s = r.current?.ev.stage
+      const first = r.current?.attempt === 1
+      return (s === 'S02' && showConsole(aiRef.current[k])) || (s === 'S07' && first && showConsole(implRef.current[k])) || (s === 'S08' && first && showConsole(reviewRef.current[k]))
+    }
     const t = setTimeout(() => setRuns(rs => Object.fromEntries(Object.entries(rs).map(([k, r]) => [k, hold(k, r) ? r : step(r)]))), DELAY[speed])
     return () => clearTimeout(t)
   }, [runs, speed])
@@ -198,13 +228,14 @@ export default function App() {
   }
 
   const ctx: Ctx = {
-    issues, runs, ai, impl, qa, aiLog, speed, setSpeed, go, focusId, ask,
+    issues, runs, ai, impl, review, qa, aiLog, speed, setSpeed, go, focusId, ask,
     select: setFocusId,
     startRun: issue => {
       const id = issue.issue_id
       setFocusId(id)
       setRuns(rs => ({ ...rs, [id]: newRun(issue) }))
       setImpl(s => Object.fromEntries(Object.entries(s).filter(([k]) => k !== id)))
+      setReview(s => Object.fromEntries(Object.entries(s).filter(([k]) => k !== id)))
       setQa(s => ({ ...s, [id]: [] }))
       setAiLog(s => ({ ...s, [id]: issue.aiDraft ? [{ kind: '이슈 초안 작성 (한 문장 요청)', ok: true, ms: issue.aiDraft.ms, at: issue.aiDraft.at, cached: issue.aiDraft.cached }] : [] }))
       callDesign(issue)
@@ -217,6 +248,7 @@ export default function App() {
       if (!issue) return
       if (a.type === 'reject' && (stage === 'G1' || stage === 'G2')) {
         setImpl(s => Object.fromEntries(Object.entries(s).filter(([k]) => k !== id)))
+        setReview(s => Object.fromEntries(Object.entries(s).filter(([k]) => k !== id)))
         callDesign(issue, a.text)
       }
       if (a.type === 'approve' && stage === 'G1' && !implRef.current[id]) callImpl(issue)
@@ -240,6 +272,7 @@ export default function App() {
     clearAiCache()
     setAi({})
     setImpl({})
+    setReview({})
     setQa({})
     setAiLog({})
     setRuns({})

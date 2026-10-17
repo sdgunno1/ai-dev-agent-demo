@@ -3,7 +3,7 @@ import type { Ctx } from '../App'
 import type { Issue } from '../data'
 import { artifactsOf, hm, implToReadyMinutes } from '../engine'
 import type { Run } from '../engine'
-import { aiOk, implOk, summaryView } from '../aiView'
+import { aiOk, implOk, reviewOk, summaryView } from '../aiView'
 
 function summaryOf(issue: Issue, run: Run) {
   const art = artifactsOf(issue)
@@ -26,6 +26,7 @@ export function ReleaseCard({ ctx, issue, run }: { ctx: Ctx; issue: Issue; run: 
   const reqAt = run.gate?.simStart ?? run.history.find(h => h.stage === 'G4')?.start
   const ok = aiOk(ctx.ai[id])
   const im = implOk(ctx.impl[id])
+  const rv = reviewOk(ctx.review[id])
   const sv = ok ? summaryView(issue, run, ok) : null
 
   return (
@@ -60,9 +61,9 @@ export function ReleaseCard({ ctx, issue, run }: { ctx: Ctx; issue: Issue; run: 
           </li>
           <li className="ok">✓ 보안 검사 · 통합 검사 이상 없음</li>
           {im && <li className={im.checks.tags.pass ? 'ok' : 'warn'}>{im.checks.tags.pass ? '✓' : '!'} AI 작성 코드 · {im.checks.tags.detail}</li>}
-          {im ? (
-            <li className={im.checks.review.pass ? 'ok' : 'warn'}>
-              {im.checks.review.pass ? '✓' : '!'} AI 자기 리뷰 · {im.checks.review.detail}
+          {rv ? (
+            <li className={rv.check.pass ? 'ok' : 'warn'}>
+              {rv.check.pass ? '✓' : '!'} {rv.check.detail}
             </li>
           ) : s.art.findings.length > 0 ? (
             <li className="warn">

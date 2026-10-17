@@ -9,10 +9,10 @@ import { Badge, Icon, PRIORITY_KO, RiskBadge, Seg, StatusBadge, deptOf } from '.
 import { ReleaseCard } from './Release'
 import {
   AiActivityBar, AiBadge, AiConsole, AiRequirements, AiResultCard, AiRiskDetail, AskBox, CheckLine, ImplDetail,
-  AFTER_MS, aiChecks, aiNodeMarks, aiOk, aiPending, implOk, implTarget, logTone, noteWithAi, showConsole, summaryView, throttleProgress,
+  AFTER_MS, ReviewDetail, aiChecks, aiNodeMarks, aiOk, aiPending, implOk, implTarget, logTone, noteWithAi, reviewOk, showConsole, summaryView, throttleProgress,
 } from '../aiView'
 import type { Phase } from '../aiView'
-import { previewDesign, previewImpl, previewIntake, runIntake } from '../liveAi'
+import { previewDesign, previewImpl, previewIntake, previewReview, runIntake } from '../liveAi'
 import type { AiFailure, IntakeResult } from '../liveAi'
 
 // 흐름도에 보이는 핵심 단계 — 세부 단계(S03~S06, S10, S11 등)는 묶어서 표시
@@ -76,7 +76,7 @@ export default function Demo({ ctx, step }: { ctx: Ctx; step: Step }) {
             right={run && <Controls ctx={ctx} issue={issue} run={run} />}
           />
           <div className="panel">
-            <Flow run={run} ai={aiNodeMarks(issue, run, ctx.ai[issue.issue_id], ctx.impl[issue.issue_id], activeIndex(run))} />
+            <Flow run={run} ai={aiNodeMarks(issue, run, ctx.ai[issue.issue_id], ctx.impl[issue.issue_id], ctx.review[issue.issue_id], activeIndex(run))} />
             {run && <ActivityBar ctx={ctx} issue={issue} run={run} />}
             <Activity ctx={ctx} issue={issue} run={run} />
           </div>
@@ -106,9 +106,10 @@ function ActivityBar({ ctx, issue, run }: { ctx: Ctx; issue: Issue; run: Run }) 
   const d = aiOk(ctx.ai[id])
   const im = implOk(ctx.impl[id])
   const qa = ctx.qa[id] ?? []
-  const kinds = (issue.aiDraft ? 1 : 0) + (d ? 3 : 0) + (im ? 3 : 0) + (qa.some(i => i.result?.ok) ? 1 : 0)
-  const working = aiPending(ctx.ai[id]) || aiPending(ctx.impl[id]) || qa.some(i => aiPending(i))
-  return <AiActivityBar calls={(ctx.aiLog[id] ?? []).filter(l => l.ok).length} kinds={kinds} rows={aiChecks(issue, run, d, im)} working={working} />
+  const rv = reviewOk(ctx.review[id])
+  const kinds = (issue.aiDraft ? 1 : 0) + (d ? 3 : 0) + (im ? 2 : 0) + (rv ? 1 : 0) + (qa.some(i => i.result?.ok) ? 1 : 0)
+  const working = aiPending(ctx.ai[id]) || aiPending(ctx.impl[id]) || aiPending(ctx.review[id]) || qa.some(i => aiPending(i))
+  return <AiActivityBar calls={(ctx.aiLog[id] ?? []).filter(l => l.ok).length} kinds={kinds} rows={aiChecks(issue, run, d, im, rv)} working={working} />
 }
 
 function Stepper({ ctx, step, run, issue }: { ctx: Ctx; step: Step; run?: Run; issue: Issue }) {
@@ -364,7 +365,7 @@ function Controls({ ctx, issue, run }: { ctx: Ctx; issue: Issue; run: Run }) {
   const pending = aiPending(ctx.ai[id])
   return (
     <div className="controls">
-      <AiBadge slots={[ctx.ai[id], ctx.impl[id], ...(ctx.qa[id] ?? [])]} count={(ctx.aiLog[id] ?? []).filter(l => l.ok).length} />
+      <AiBadge slots={[ctx.ai[id], ctx.impl[id], ctx.review[id], ...(ctx.qa[id] ?? [])]} count={(ctx.aiLog[id] ?? []).filter(l => l.ok).length} />
       <Seg<Speed> value={ctx.speed} onChange={ctx.setSpeed} options={[['slow', '느리게'], ['normal', '보통'], ['fast', '빠르게']]} />
       {run.status === 'running' && (
         <button className="icobtn" title="일시정지" onClick={() => ctx.pause(id, true)}>
@@ -410,6 +411,8 @@ function Activity({ ctx, issue, run }: { ctx: Ctx; issue: Issue; run?: Run }) {
   const implState = ctx.impl[issue.issue_id]
   const ok = aiOk(aiState)
   const im = implOk(implState)
+  const reviewState = ctx.review[issue.issue_id]
+  const rv = reviewOk(reviewState)
   const last = [...run.history].reverse().find(h => h.result !== 'skip')
   const sv = ok ? summaryView(issue, run, ok) : null
   const curStage = run.current?.ev.stage ?? (run.status === 'running' ? run.queue.find(e => e.result !== 'skip')?.stage : undefined)
@@ -447,6 +450,9 @@ function Activity({ ctx, issue, run }: { ctx: Ctx; issue: Issue; run?: Run }) {
         {!run.gate && curStage === 'S02' && aiState && showConsole(aiState) && (
           <AiConsole slot={aiState} preview={previewDesign(aiState.stream ?? '')} label="설계 · 위험 · 요약" />
         )}
+        {!run.gate && curStage === 'S08' && run.current?.attempt === 1 && reviewState && showConsole(reviewState) && (
+          <AiConsole slot={reviewState} preview={previewReview(reviewState.stream ?? '', implTarget(issue).file)} label="AI 리뷰" />
+        )}
         {!run.gate && curStage === 'S07' && run.current?.attempt === 1 && implState && showConsole(implState) && (
           <AiConsole slot={implState} preview={previewImpl(implState.stream ?? '', implTarget(issue).file)} label="코드 · API · 리뷰" />
         )}
@@ -457,10 +463,11 @@ function Activity({ ctx, issue, run }: { ctx: Ctx; issue: Issue; run?: Run }) {
               {STAGE_INFO[last.stage].name}
               {last.attempt > 1 && ` ${last.attempt}차`}
             </b>
-            <span>{noteWithAi(last, issue, run, ok, im)}</span>
+            <span>{noteWithAi(last, issue, run, ok, im, rv)}</span>
             {last.stage === 'S02' && ok && <CheckLine c={ok.checks.coverage} />}
             {last.stage === 'S03' && ok && <AiRiskDetail res={ok} />}
-            {im && last.attempt === 1 && (last.stage === 'S07' || last.stage === 'S07c' || last.stage === 'S08') && <ImplDetail stage={last.stage} im={im} />}
+            {im && last.attempt === 1 && (last.stage === 'S07' || last.stage === 'S07c') && <ImplDetail stage={last.stage} im={im} />}
+            {rv && last.attempt === 1 && last.stage === 'S08' && <ReviewDetail rv={rv} />}
             {last.stage === 'S13' && sv && <CheckLine c={sv.check} />}
             {last.routeTo && <span className="back-note">↩ {STAGE_INFO[last.routeTo].name} 단계로 되돌려 다시 수정합니다</span>}
           </div>
@@ -475,12 +482,12 @@ function Activity({ ctx, issue, run }: { ctx: Ctx; issue: Issue; run?: Run }) {
           {run.history
             .filter(h => h.result !== 'skip')
             .map((h, k) => (
-              <li key={k} className={`r-${logTone(h, issue, run, ok, im)}`}>
+              <li key={k} className={`r-${logTone(h, issue, run, ok, rv)}`}>
                 <span className="mono">{hm(h.end)}</span>
                 <span className="lg-dot" />
                 <span>
                   <b>{STAGE_INFO[h.stage].name}</b>
-                  {h.attempt > 1 && <em> {h.attempt}차</em>} {noteWithAi(h, issue, run, ok, im)}
+                  {h.attempt > 1 && <em> {h.attempt}차</em>} {noteWithAi(h, issue, run, ok, im, rv)}
                 </span>
               </li>
             ))}
@@ -728,7 +735,7 @@ function Results({ ctx, issue, run }: { ctx: Ctx; issue: Issue; run?: Run }) {
         </div>
       </div>
     </div>
-    <AiResultCard issue={issue} run={run} design={ctx.ai[issue.issue_id]} impl={ctx.impl[issue.issue_id]} qa={ctx.qa[issue.issue_id] ?? []} log={ctx.aiLog[issue.issue_id] ?? []} />
+    <AiResultCard issue={issue} run={run} design={ctx.ai[issue.issue_id]} impl={ctx.impl[issue.issue_id]} review={ctx.review[issue.issue_id]} qa={ctx.qa[issue.issue_id] ?? []} log={ctx.aiLog[issue.issue_id] ?? []} />
     </>
   )
 }

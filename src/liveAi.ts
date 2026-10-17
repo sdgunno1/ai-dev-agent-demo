@@ -65,6 +65,7 @@ export interface ApiRequest {
 
 export interface Finding {
   id: string
+  severity: string
   message: string
   quote: string
   kept: boolean // 인용한 코드가 AI 코드에 있으면 반영, 없으면 보류
@@ -74,8 +75,13 @@ export interface ImplResult extends Meta {
   file: string
   code: string
   apiRequests: ApiRequest[]
-  review: Finding[]
-  checks: { tags: Check; api: Check; review: Check }
+  checks: { tags: Check; api: Check }
+}
+
+export interface ReviewResult extends Meta {
+  file: string
+  findings: Finding[]
+  check: Check
 }
 
 export interface IntakeResult extends Meta {
@@ -458,14 +464,13 @@ function implPrompt(issue: AiIssue, reqs: string[], file: string, api: string, o
     '[할 일]',
     '1. import 문과 클래스 선언 없이, 위 파일의 핵심 메서드만 Java로 25줄 이내로 쓴다. 각 요구사항을 구현한 줄 끝에 // 요구1 처럼 번호 주석을 단다. 이 파일에서 구현하지 않는 요구사항(화면 등)은 코드 맨 위에 // 요구1: TripList.vue에서 처리 처럼 처리하는 파일을 주석으로 적는다. 모든 요구사항 번호가 최소 한 번은 나와야 한다.',
     '2. API 테스트 요청 3개. cond는 확인 조건(한국어), request는 "GET /api/...?파라미터" 형태, expected는 기대 결과 한 구절(한국어), ac는 이 요청이 확인하는 수용 기준 번호 배열.',
-    '3. 자기 리뷰: 방금 쓴 코드의 결함이나 개선점 1~2개. message는 한국어 한 문장, quote에는 위 코드에서 한 줄을 따옴표 없이 글자 그대로 복사한다.',
     '',
     '[출력 형식] 아래 두 블록만 순서대로 출력한다. 다른 설명은 쓰지 않는다.',
     '```java',
     '(코드)',
     '```',
     '```json',
-    '{"api_requests":[{"id":"REQ-01","cond":"","request":"","expected":"","ac":["AC-2"]}],"review":[{"id":"F-01","message":"","quote":""}]}',
+    '{"api_requests":[{"id":"REQ-01","cond":"","request":"","expected":"","ac":["AC-2"]}]}',
     '```',
   ].join('\n')
 }
@@ -497,8 +502,8 @@ function checkApi(issue: AiIssue, reqs: ApiRequest[]): Check {
 function reviewCheck(review: Finding[]): Check {
   const kept = review.filter(f => f.kept).length
   const held = review.length - kept
-  if (!review.length) return { pass: true, detail: 'AI 지적 0건' }
-  return { pass: held === 0, detail: `AI 지적 ${review.length}건: 반영 ${kept} · 보류 ${held}${held ? ' (인용한 코드가 AI 코드에 없음)' : ''}` }
+  if (!review.length) return { pass: true, detail: 'AI 리뷰 지적 0건' }
+  return { pass: held === 0, detail: `AI 리뷰 지적 ${review.length}건: 반영 ${kept} · 보류 ${held}${held ? ' (인용한 코드가 구현 코드에 없음)' : ''}` }
 }
 
 const implKey = (issue: AiIssue, reqs: string[], file: string) => keyOf('impl', issue.id, issue.title, issue.ac.join('|'), reqs.join('|'), file)
@@ -518,7 +523,6 @@ export async function runImpl(issue: AiIssue, reqs: string[], file: string, api:
   const code = (fence?.[1] ?? '').replace(/\s+$/, '')
   if (!fence || !code) return { ok: false, reason: 'AI 응답에 코드 블록이 없음', raw: r.content }
   let apiRequests: ApiRequest[] = []
-  let review: Finding[] = []
   try {
     const j = parseJson(r.content.slice((fence.index ?? 0) + fence[0].length))
     apiRequests = (Array.isArray(j.api_requests) ? j.api_requests : []).slice(0, 4).map((x: Record<string, unknown>, i: number) => ({
@@ -528,11 +532,6 @@ export async function runImpl(issue: AiIssue, reqs: string[], file: string, api:
       expected: String(x?.expected ?? ''),
       ac: (Array.isArray(x?.ac) ? x.ac : []).map(normAc),
     }))
-    const flat = squash(code)
-    review = (Array.isArray(j.review) ? j.review : []).slice(0, 3).map((x: Record<string, unknown>, i: number) => {
-      const quote = String(x?.quote ?? '').trim().replace(/^["'`“”‘’]+|["'`“”‘’]+$/g, '').trim()
-      return { id: String(x?.id ?? `F-0${i + 1}`), message: String(x?.message ?? ''), quote, kept: squash(quote).length >= 4 && flat.includes(squash(quote)) }
-    })
   } catch {
     /* 표 부분이 깨지면 코드만 쓰고, 빈 결과는 검사에서 드러난다 */
   }
@@ -541,8 +540,7 @@ export async function runImpl(issue: AiIssue, reqs: string[], file: string, api:
     file,
     code,
     apiRequests,
-    review,
-    checks: { tags: checkTags(code, reqs.length), api: checkApi(issue, apiRequests), review: reviewCheck(review) },
+    checks: { tags: checkTags(code, reqs.length), api: checkApi(issue, apiRequests) },
   }
   cacheSet(implKey(issue, reqs, file), result)
   return result
@@ -564,10 +562,75 @@ export function previewImpl(partial: string, file: string) {
     out.push('', 'API 테스트 요청')
     conds.forEach((c, i) => out.push(`REQ-0${i + 1}  ${c}${reqs[i] ? `  ·  ${reqs[i]}` : ''}`))
   }
-  const msgs = fieldAll(rest, 'message')
-  if (msgs.length) {
-    out.push('', '자기 리뷰')
-    msgs.forEach((m, i) => out.push(`F-0${i + 1}  ${m}`))
+  return out.join('\n')
+}
+
+// ── ③ AI 리뷰 호출: 구현 호출이 쓴 코드를 다른 호출이 읽고 지적 ──
+function reviewPrompt(issue: AiIssue, reqs: string[], file: string, code: string) {
+  return [
+    `[이슈] ${issue.id} ${issue.title}`,
+    '[설계 요구사항]',
+    ...reqs.map((r, i) => `요구${i + 1}: ${r}`),
+    '',
+    `[리뷰할 코드 — ${file}]`,
+    '```java',
+    code,
+    '```',
+    '',
+    '[할 일] 위 코드만 읽고 결함이나 위험 1~3개를 지적한다.',
+    '- severity: "높음", "중간", "낮음" 중 하나',
+    '- message: 무엇이 왜 문제인지 한국어 한 문장',
+    '- quote: 근거가 되는 줄을 위 코드에서 따옴표 없이 글자 그대로 한 줄 복사',
+    '',
+    '[출력 형식] 설명 없이 JSON 객체 하나만 출력한다.',
+    '{"review":[{"id":"F-01","severity":"","message":"","quote":""}]}',
+  ].join('\n')
+}
+
+const reviewKey = (issue: AiIssue, code: string) => keyOf('review', issue.id, code)
+
+export const getCachedReview = (issue: AiIssue, code: string) => cacheGet<ReviewResult>(reviewKey(issue, code))
+
+export async function runReview(issue: AiIssue, reqs: string[], file: string, code: string, onProgress?: OnProgress): Promise<ReviewResult | AiFailure> {
+  const r = await streamChat(
+    [
+      { role: 'system', content: ROLE('코드 리뷰') + ' 근거 없는 지적은 하지 않는다. 설명 없이 JSON 객체 하나만 출력한다.' },
+      { role: 'user', content: reviewPrompt(issue, reqs, file, code) },
+    ],
+    onProgress,
+  )
+  if (!r.ok) return r
+  try {
+    const j = parseJson(r.content)
+    const flat = squash(code)
+    const findings: Finding[] = (Array.isArray(j.review) ? j.review : []).slice(0, 3).map((x: Record<string, unknown>, i: number) => {
+      const quote = String(x?.quote ?? '').trim().replace(/^["'`“”‘’]+|["'`“”‘’]+$/g, '').trim()
+      return {
+        id: `F-0${i + 1}`,
+        severity: String(x?.severity ?? '').trim(),
+        message: String(x?.message ?? '').trim(),
+        quote,
+        kept: squash(quote).length >= 4 && flat.includes(squash(quote)),
+      }
+    })
+    const result: ReviewResult = { ...meta(r.content, r.elapsedMs), file, findings, check: reviewCheck(findings) }
+    cacheSet(reviewKey(issue, code), result)
+    return result
+  } catch (e) {
+    return { ok: false, reason: `AI 응답 해석 실패 (${e instanceof Error ? e.message : e})`, raw: r.content }
+  }
+}
+
+/** 리뷰 호출이 쓰는 중인 JSON을 사람이 읽는 줄로 */
+export function previewReview(partial: string, file: string) {
+  const out = [`AI 리뷰 · ${file}`]
+  const sev = fieldAll(partial, 'severity')
+  const msg = fieldAll(partial, 'message')
+  const quote = fieldAll(partial, 'quote')
+  const n = Math.max(sev.length, msg.length)
+  for (let i = 0; i < n; i++) {
+    out.push('', `F-0${i + 1}${sev[i] ? ` [${sev[i]}]` : ''} ${msg[i] ?? ''}`)
+    if (quote[i] !== undefined) out.push(`   인용: ${quote[i]}`)
   }
   return out.join('\n')
 }
