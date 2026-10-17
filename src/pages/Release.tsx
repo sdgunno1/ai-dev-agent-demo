@@ -3,7 +3,7 @@ import type { Ctx } from '../App'
 import type { Issue } from '../data'
 import { artifactsOf, hm, implToReadyMinutes } from '../engine'
 import type { Run } from '../engine'
-import { aiOk, summaryView } from '../aiView'
+import { aiOk, implOk, summaryView } from '../aiView'
 
 function summaryOf(issue: Issue, run: Run) {
   const art = artifactsOf(issue)
@@ -25,6 +25,7 @@ export function ReleaseCard({ ctx, issue, run }: { ctx: Ctx; issue: Issue; run: 
   const id = issue.issue_id
   const reqAt = run.gate?.simStart ?? run.history.find(h => h.stage === 'G4')?.start
   const ok = aiOk(ctx.ai[id])
+  const im = implOk(ctx.impl[id])
   const sv = ok ? summaryView(issue, run, ok) : null
 
   return (
@@ -58,7 +59,12 @@ export function ReleaseCard({ ctx, issue, run }: { ctx: Ctx; issue: Issue; run: 
             ✓ 수용 기준 {s.acN}/{s.acN} 통과 · 기존 API 회귀 12/12 통과
           </li>
           <li className="ok">✓ 보안 검사 · 통합 검사 이상 없음</li>
-          {s.art.findings.length > 0 ? (
+          {im && <li className={im.checks.tags.pass ? 'ok' : 'warn'}>{im.checks.tags.pass ? '✓' : '!'} AI 작성 코드 · {im.checks.tags.detail}</li>}
+          {im ? (
+            <li className={im.checks.review.pass ? 'ok' : 'warn'}>
+              {im.checks.review.pass ? '✓' : '!'} AI 자기 리뷰 · {im.checks.review.detail}
+            </li>
+          ) : s.art.findings.length > 0 ? (
             <li className="warn">
               ! AI 리뷰 지적 {s.art.findings.length}건: 반영 {s.accepted}
               {s.hold ? ` · 보류 ${s.hold} (인용한 코드 없음)` : ''}

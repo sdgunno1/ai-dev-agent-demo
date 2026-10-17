@@ -7,7 +7,13 @@ import { artifactsOf, hm, implToReadyMinutes, riskOf } from '../engine'
 import type { Run } from '../engine'
 import { Badge, Icon, PRIORITY_KO, RiskBadge, Seg, StatusBadge, deptOf } from '../ui'
 import { ReleaseCard } from './Release'
-import { AiBadge, AiRequirements, AiResultCard, AiRiskDetail, AiWaitNote, CheckLine, aiOk, aiPending, noteWithAi, summaryView } from '../aiView'
+import {
+  AiActivityBar, AiBadge, AiConsole, AiRequirements, AiResultCard, AiRiskDetail, AskBox, CheckLine, ImplDetail,
+  aiChecks, aiNodeMarks, aiOk, aiPending, implOk, implTarget, logTone, noteWithAi, summaryView, throttleProgress,
+} from '../aiView'
+import type { Phase } from '../aiView'
+import { previewDesign, previewImpl, previewIntake, runIntake } from '../liveAi'
+import type { AiFailure, IntakeResult } from '../liveAi'
 
 // 흐름도에 보이는 핵심 단계 — 세부 단계(S03~S06, S10, S11 등)는 묶어서 표시
 const NODES: { label: string; actor: string; gate?: boolean; stages: StageId[] }[] = [
@@ -70,7 +76,8 @@ export default function Demo({ ctx, step }: { ctx: Ctx; step: Step }) {
             right={run && <Controls ctx={ctx} issue={issue} run={run} />}
           />
           <div className="panel">
-            <Flow run={run} />
+            <Flow run={run} ai={aiNodeMarks(issue, run, ctx.ai[issue.issue_id], ctx.impl[issue.issue_id], activeIndex(run))} />
+            {run && <ActivityBar ctx={ctx} issue={issue} run={run} />}
             <Activity ctx={ctx} issue={issue} run={run} />
           </div>
           {done && (
@@ -91,6 +98,17 @@ export default function Demo({ ctx, step }: { ctx: Ctx; step: Step }) {
       )}
     </div>
   )
+}
+
+/** 흐름도 아래: 이 공정에서 실제 AI가 한 일 한 줄 요약 */
+function ActivityBar({ ctx, issue, run }: { ctx: Ctx; issue: Issue; run: Run }) {
+  const id = issue.issue_id
+  const d = aiOk(ctx.ai[id])
+  const im = implOk(ctx.impl[id])
+  const qa = ctx.qa[id] ?? []
+  const kinds = (issue.aiDraft ? 1 : 0) + (d ? 3 : 0) + (im ? 3 : 0) + (qa.some(i => i.result?.ok) ? 1 : 0)
+  const working = aiPending(ctx.ai[id]) || aiPending(ctx.impl[id]) || qa.some(i => aiPending(i))
+  return <AiActivityBar calls={(ctx.aiLog[id] ?? []).filter(l => l.ok).length} kinds={kinds} rows={aiChecks(issue, run, d, im)} working={working} />
 }
 
 function Stepper({ ctx, step, run, issue }: { ctx: Ctx; step: Step; run?: Run; issue: Issue }) {
@@ -134,8 +152,27 @@ function SecHead({ title, sub, right }: { title: string; sub: string; right?: Re
 // ── ① 입력 ────────────────────────────────────────────────
 function InputSection({ ctx, issue, onSelect, onStart }: { ctx: Ctx; issue: Issue; onSelect: (id: string) => void; onStart: (i: Issue) => void }) {
   const [custom, setCustom] = useState(false)
-  const [form, setForm] = useState({ type: 'feature' as IssueType, title: '', acs: '' })
+  const [form, setForm] = useState({ type: 'feature' as IssueType, title: '', acs: '', desc: '' })
   const [err, setErr] = useState('')
+  const [sentence, setSentence] = useState('')
+  const [intake, setIntake] = useState<{ status: Phase; startedAt: number; seconds?: number; stream?: string; result?: IntakeResult | AiFailure } | null>(null)
+  const drafting = !!intake && aiPending(intake)
+
+  // 한 문장 요청 → AI가 제목 · 유형 · 수용 기준을 실시간으로 작성
+  const draft = () => {
+    if (!sentence.trim() || drafting) return
+    setIntake({ status: 'calling', startedAt: Date.now() })
+    runIntake(
+      sentence,
+      throttleProgress(p => setIntake(s => (s && s.status !== 'done' ? { ...s, status: p.phase, seconds: p.seconds, stream: p.text ?? s.stream } : s))),
+    ).then(res => {
+      setIntake(s => (s ? { ...s, status: 'done', result: res } : s))
+      if (res.ok) {
+        setForm({ type: res.type, title: res.title, acs: res.ac.join('\n'), desc: res.description })
+        setErr('')
+      }
+    })
+  }
   const nextId = `ISSUE-${1046 + ctx.issues.filter(i => i.custom).length}`
 
   const startCustom = () => {
@@ -144,12 +181,15 @@ function InputSection({ ctx, issue, onSelect, onStart }: { ctx: Ctx; issue: Issu
     const d = new Date()
     const it: Issue = {
       issue_id: nextId, type: form.type, title: form.title.trim(), requester: '총무팀 / user_0001', priority: 'medium',
-      created_at: d.toISOString(), description: form.title.trim(), custom: true,
+      created_at: d.toISOString(), description: form.desc.trim() || form.title.trim(), custom: true,
+      aiDraft: intake?.result?.ok ? { ms: intake.result.elapsedMs, at: intake.result.createdAt, cached: intake.result.cached, checks: [intake.result.checks.count, intake.result.checks.vague] } : undefined,
       acceptance_criteria: acs.map((a, i) => `AC-${i + 1} ${a.replace(/^AC-\d+\s*/, '')}`),
     }
     ctx.addIssue(it)
     setErr('')
     setCustom(false)
+    setIntake(null)
+    setSentence('')
     onStart(it)
   }
 
@@ -187,6 +227,29 @@ function InputSection({ ctx, issue, onSelect, onStart }: { ctx: Ctx; issue: Issu
                 <span className="mono muted">{nextId}</span>
                 <Seg<IssueType> value={form.type} onChange={t => setForm({ ...form, type: t })} options={[['feature', '기능'], ['bug', '버그']]} />
               </div>
+              <div className="intake">
+                <label htmlFor="intake-s">
+                  한 문장으로 요청 <span className="muted small">AI가 제목 · 유형 · 수용 기준을 작성합니다</span>
+                </label>
+                <div className="intake-row">
+                  <input id="intake-s" value={sentence} disabled={drafting} placeholder="예: 출장 신청서를 결재선까지 포함해서 PDF로 뽑고 싶다" onChange={e => setSentence(e.target.value)} onKeyDown={e => e.key === 'Enter' && draft()} />
+                  <button className="btn primary" disabled={drafting || !sentence.trim()} onClick={draft}>
+                    AI로 이슈 작성
+                  </button>
+                </div>
+                {intake && drafting && <AiConsole slot={intake} preview={previewIntake(intake.stream ?? '')} label="이슈 초안" />}
+                {intake?.result?.ok && (
+                  <div className="intake-checks">
+                    <span className="chip c-green">
+                      <span className="dot" />
+                      실제 AI 작성 · 아래 내용을 고칠 수 있습니다
+                    </span>
+                    <CheckLine c={intake.result.checks.count} />
+                    <CheckLine c={intake.result.checks.vague} />
+                  </div>
+                )}
+                {intake?.result && !intake.result.ok && <span className="err-t">AI 응답을 받지 못했습니다 ({intake.result.reason}). 아래에 직접 입력해 주세요.</span>}
+              </div>
               <label>
                 제목
                 <input value={form.title} placeholder="예: 출장 신청서 PDF 출력" onChange={e => setForm({ ...form, title: e.target.value })} />
@@ -197,7 +260,7 @@ function InputSection({ ctx, issue, onSelect, onStart }: { ctx: Ctx; issue: Issu
               </label>
               {err && <span className="err-t">{err}</span>}
               <div className="detail-f">
-                <button className="btn quiet" onClick={() => setForm({ type: 'feature', title: '출장 신청서 PDF 출력', acs: '출장 상세 화면에 [PDF 출력] 버튼 표시\nPDF에 신청자·출장지·기간·결재선 포함\n파일명은 trip_TRIPID.pdf' })}>
+                <button className="btn quiet" onClick={() => { setIntake(null); setForm({ type: 'feature', title: '출장 신청서 PDF 출력', acs: '출장 상세 화면에 [PDF 출력] 버튼 표시\nPDF에 신청자·출장지·기간·결재선 포함\n파일명은 trip_TRIPID.pdf', desc: '' }) }}>
                   예시 채우기
                 </button>
                 <button className="btn primary lg" onClick={startCustom}>
@@ -240,7 +303,7 @@ function InputSection({ ctx, issue, onSelect, onStart }: { ctx: Ctx; issue: Issu
 }
 
 // ── ② 흐름도 ──────────────────────────────────────────────
-function Flow({ run }: { run?: Run }) {
+function Flow({ run, ai }: { run?: Run; ai?: { marks: Set<number>; working?: number } }) {
   const at = activeIndex(run)
   const waiting = !!run?.gate
   const g5 = run?.gate?.ev.stage === 'G5'
@@ -279,12 +342,13 @@ function Flow({ run }: { run?: Run }) {
         {NODES.map((n, i) => {
           const st = at < 0 ? 'todo' : i < at ? 'done' : i === at ? (run?.status === 'done' ? 'done' : waiting ? (g5 ? 'alert' : 'wait') : 'now') : 'todo'
           return (
-            <li key={n.label} className={`node n-${st} ${n.gate ? 'is-gate' : ''} ${i === N - 1 ? 'end' : ''}`}>
+            <li key={n.label} className={`node n-${st} ${n.gate ? 'is-gate' : ''} ${i === N - 1 ? 'end' : ''} ${ai?.marks.has(i) ? 'has-ai' : ''} ${ai?.working === i ? 'ai-working' : ''}`}>
               <span className="n-ico">
                 {st === 'done' ? <Icon name="check" className="ico-s" /> : st === 'now' ? <span className="spin" /> : n.gate ? <Icon name="user" className="ico-s" /> : <span className="n-num">{i + 1}</span>}
               </span>
               <span className="n-label">{n.label}</span>
               <span className="n-actor">{st === 'wait' ? '승인 대기' : st === 'alert' ? '개입 필요' : n.actor}</span>
+              {(ai?.marks.has(i) || ai?.working === i) && <span className="n-ai">{ai?.working === i ? 'AI 작업 중' : '실제 AI'}</span>}
             </li>
           )
         })}
@@ -298,7 +362,7 @@ function Controls({ ctx, issue, run }: { ctx: Ctx; issue: Issue; run: Run }) {
   const pending = aiPending(ctx.ai[id])
   return (
     <div className="controls">
-      <AiBadge state={ctx.ai[id]} />
+      <AiBadge slots={[ctx.ai[id], ctx.impl[id], ...(ctx.qa[id] ?? [])]} count={(ctx.aiLog[id] ?? []).filter(l => l.ok).length} />
       <Seg<Speed> value={ctx.speed} onChange={ctx.setSpeed} options={[['slow', '느리게'], ['normal', '보통'], ['fast', '빠르게']]} />
       {run.status === 'running' && (
         <button className="icobtn" title="일시정지" onClick={() => ctx.pause(id, true)}>
@@ -341,7 +405,9 @@ function Activity({ ctx, issue, run }: { ctx: Ctx; issue: Issue; run?: Run }) {
   }
 
   const aiState = ctx.ai[issue.issue_id]
+  const implState = ctx.impl[issue.issue_id]
   const ok = aiOk(aiState)
+  const im = implOk(implState)
   const last = [...run.history].reverse().find(h => h.result !== 'skip')
   const sv = ok ? summaryView(issue, run, ok) : null
   const curStage = run.current?.ev.stage ?? (run.status === 'running' ? run.queue.find(e => e.result !== 'skip')?.stage : undefined)
@@ -373,9 +439,14 @@ function Activity({ ctx, issue, run }: { ctx: Ctx; issue: Issue; run?: Run }) {
                   <dd>{STAGE_INFO[curStage].judge}</dd>
                 </dl>
               )}
-              {curStage === 'S02' && <AiWaitNote state={aiState} />}
             </div>
           </div>
+        )}
+        {!run.gate && curStage === 'S02' && aiState && aiPending(aiState) && (
+          <AiConsole slot={aiState} preview={previewDesign(aiState.stream ?? '')} label="설계 · 위험 · 요약" />
+        )}
+        {!run.gate && curStage === 'S07' && run.current?.attempt === 1 && implState && aiPending(implState) && (
+          <AiConsole slot={implState} preview={previewImpl(implState.stream ?? '', implTarget(issue).file)} label="코드 · API · 리뷰" />
         )}
         {!run.gate && last && (
           <div className={`just r-${last.result}`}>
@@ -384,8 +455,10 @@ function Activity({ ctx, issue, run }: { ctx: Ctx; issue: Issue; run?: Run }) {
               {STAGE_INFO[last.stage].name}
               {last.attempt > 1 && ` ${last.attempt}차`}
             </b>
-            <span>{noteWithAi(last.stage, last.note, issue, run, ok)}</span>
+            <span>{noteWithAi(last, issue, run, ok, im)}</span>
+            {last.stage === 'S02' && ok && <CheckLine c={ok.checks.coverage} />}
             {last.stage === 'S03' && ok && <AiRiskDetail res={ok} />}
+            {im && last.attempt === 1 && (last.stage === 'S07' || last.stage === 'S07c' || last.stage === 'S08') && <ImplDetail stage={last.stage} im={im} />}
             {last.stage === 'S13' && sv && <CheckLine c={sv.check} />}
             {last.routeTo && <span className="back-note">↩ {STAGE_INFO[last.routeTo].name} 단계로 되돌려 다시 수정합니다</span>}
           </div>
@@ -400,12 +473,12 @@ function Activity({ ctx, issue, run }: { ctx: Ctx; issue: Issue; run?: Run }) {
           {run.history
             .filter(h => h.result !== 'skip')
             .map((h, k) => (
-              <li key={k} className={`r-${h.stage === 'S13' && sv && !sv.fromAi ? 'findings' : h.result}`}>
+              <li key={k} className={`r-${logTone(h, issue, run, ok, im)}`}>
                 <span className="mono">{hm(h.end)}</span>
                 <span className="lg-dot" />
                 <span>
                   <b>{STAGE_INFO[h.stage].name}</b>
-                  {h.attempt > 1 && <em> {h.attempt}차</em>} {noteWithAi(h.stage, h.note, issue, run, ok)}
+                  {h.attempt > 1 && <em> {h.attempt}차</em>} {noteWithAi(h, issue, run, ok, im)}
                 </span>
               </li>
             ))}
@@ -503,6 +576,7 @@ function GatePanel({ ctx, issue, run }: { ctx: Ctx; issue: Issue; run: Run }) {
           </p>
         </div>
       </div>
+      {g.ev.stage === 'G1' && <AskBox items={ctx.qa[id] ?? []} onAsk={q => ctx.ask(id, q)} />}
       {g.ev.suggestReject && (
         <p className="pl-note">
           PL 메모: “{g.ev.suggestReject}” <span className="muted">— 반려 시나리오</span>
@@ -652,7 +726,7 @@ function Results({ ctx, issue, run }: { ctx: Ctx; issue: Issue; run?: Run }) {
         </div>
       </div>
     </div>
-    <AiResultCard issue={issue} run={run} state={ctx.ai[issue.issue_id]} />
+    <AiResultCard issue={issue} run={run} design={ctx.ai[issue.issue_id]} impl={ctx.impl[issue.issue_id]} qa={ctx.qa[issue.issue_id] ?? []} log={ctx.aiLog[issue.issue_id] ?? []} />
     </>
   )
 }

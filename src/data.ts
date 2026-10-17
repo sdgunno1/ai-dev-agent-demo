@@ -13,6 +13,8 @@ export interface Issue {
   description: string
   acceptance_criteria: string[]
   custom?: boolean
+  /** 한 문장 요청을 AI가 이슈로 정리한 경우 — 호출 기록과 실행기 검사 결과 */
+  aiDraft?: { ms: number; at: string; cached: boolean; checks: { pass: boolean; detail: string }[] }
 }
 
 export const SAMPLE_ISSUES: Issue[] = [
