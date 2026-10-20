@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { Ctx, Speed } from '../App'
-import { R1042, SAMPLE_ISSUES, SCENARIO_HINT, STAGE_INFO } from '../data'
+import { METRICS, R1042, REGRESSION_APIS, SAMPLE_ISSUES, SCENARIO_HINT, STAGE_INFO } from '../data'
 import type { Issue, IssueType, StageId } from '../data'
 import { artifactsOf, hm, implToReadyMinutes, riskOf } from '../engine'
 import type { Run } from '../engine'
@@ -12,7 +12,7 @@ import {
   AFTER_MS, ReviewDetail, aiChecks, aiNodeMarks, aiOk, aiPending, implOk, implTarget, logTone, noteWithAi, reviewOk, showConsole, summaryView, throttleProgress,
 } from '../aiView'
 import type { Phase } from '../aiView'
-import { previewDesign, previewImpl, previewIntake, previewReview, runIntake } from '../liveAi'
+import { MODEL_LABEL, previewDesign, previewImpl, previewIntake, previewReview, runIntake } from '../liveAi'
 import type { AiFailure, IntakeResult } from '../liveAi'
 
 // 흐름도에 보이는 핵심 단계 — 세부 단계(S03~S06, S10, S11 등)는 묶어서 표시
@@ -92,7 +92,17 @@ export default function Demo({ ctx, step }: { ctx: Ctx; step: Step }) {
 
       {step === 'result' && (
         <section className="sec">
-          <SecHead title={done ? issue.title : '결과'} sub={done ? `${issue.issue_id} · 모든 판정에는 실행해서 확인한 근거가 붙습니다` : '모든 판정에는 실행해서 확인한 근거가 붙습니다'} />
+          <SecHead
+            title={done ? issue.title : '결과'}
+            sub={done && run ? <DoneLine run={run} /> : '모든 판정에는 실행해서 확인한 근거가 붙습니다'}
+            right={
+              done && (
+                <button className="btn primary" onClick={() => ctx.go('report', issue.issue_id)}>
+                  상세 검증 리포트
+                </button>
+              )
+            }
+          />
           <Results ctx={ctx} issue={issue} run={run} />
         </section>
       )}
@@ -138,7 +148,7 @@ function Stepper({ ctx, step, run, issue }: { ctx: Ctx; step: Step; run?: Run; i
   )
 }
 
-function SecHead({ title, sub, right }: { title: string; sub: string; right?: ReactNode }) {
+function SecHead({ title, sub, right }: { title: string; sub: ReactNode; right?: ReactNode }) {
   return (
     <div className="sec-h">
       <div className="sec-t">
@@ -653,6 +663,7 @@ function Wire({ issue }: { issue: Issue }) {
 
 // ── ③ 결과 ────────────────────────────────────────────────
 function Results({ ctx, issue, run }: { ctx: Ctx; issue: Issue; run?: Run }) {
+  const [showAi, setShowAi] = useState(false)
   if (!run || run.status !== 'done') {
     return (
       <div className="panel result-empty">
@@ -671,71 +682,205 @@ function Results({ ctx, issue, run }: { ctx: Ctx; issue: Issue; run?: Run }) {
       </div>
     )
   }
+  const id = issue.issue_id
   const art = artifactsOf(issue)
   const final = art.ac[art.ac.length - 1]
   const first = art.ac[0]
-  const mins = implToReadyMinutes(run)
+  const retried = final.filter((_, k) => first[k]?.[1] === 'fail').map(r => r[0])
+  const checks = aiChecks(issue, run, aiOk(ctx.ai[id]), implOk(ctx.impl[id]), reviewOk(ctx.review[id]))
+  const held = checks.filter(c => !c.pass)
+  const calls = (ctx.aiLog[id] ?? []).filter(l => l.ok).length
+  return (
+    <>
+      <div className="dash-rings">
+        <RingCard
+          label="수용 기준"
+          segs={final.map((r, k) => ({ ok: true, title: `${issue.acceptance_criteria[k] ?? r[0]} · ${first[k]?.[1] === 'fail' ? '1차 실패 → 통과' : '통과'}` }))}
+          head="모두 통과"
+          sub={retried.length ? `${retried.join(', ')} 1차 실패 → 자동 수정` : '1차 시도에 모두 통과'}
+        />
+        <RingCard
+          label="기존 API 회귀"
+          segs={REGRESSION_APIS.map(a => ({ ok: true, title: `${a[3]} · ${a[0]} ${a[1]} · 통과` }))}
+          head="영향 없음"
+          sub={`기존 기능 ${REGRESSION_APIS.length}개 정상 동작`}
+        />
+        <RingCard
+          label="실제 AI 출력 검사"
+          segs={checks.map(c => ({ ok: c.pass, title: `${c.label} · ${c.detail}` }))}
+          head={!checks.length ? 'AI 응답 없음' : held.length ? `${checks.length - held.length} 통과 · ${held.length} 보류` : '모두 통과'}
+          sub={
+            !checks.length ? '시뮬레이션으로 진행' : held.length ? (
+              <>
+                <span className="warn-mk">!</span>
+                {held[0].label}
+                {held.length > 1 && ` 외 ${held.length - 1}건`} → 사람 확인
+              </>
+            ) : `${MODEL_LABEL} · 응답 ${calls}건`
+          }
+          action={
+            <button className="link-btn" onClick={() => setShowAi(v => !v)}>
+              {showAi ? '처리 내역 닫기' : '처리 내역 보기'}
+            </button>
+          }
+        />
+      </div>
+      <div className="dash-row">
+        <CompareCard mins={implToReadyMinutes(run)} />
+        <TimeCard run={run} />
+      </div>
+      {showAi && <AiResultCard issue={issue} run={run} design={ctx.ai[id]} impl={ctx.impl[id]} review={ctx.review[id]} qa={ctx.qa[id] ?? []} log={ctx.aiLog[id] ?? []} />}
+    </>
+  )
+}
+
+function DoneLine({ run }: { run: Run }) {
   const g4 = run.approvals.filter(a => a.gate === 'G4').slice(-1)[0]
   return (
     <>
-    <div className="panel">
-      <div className="kpis">
-        <div className="kpi">
-          <span>수용 기준</span>
-          <b>
-            {final.length}/{final.length}
-          </b>
-          <Badge tone="green">통과</Badge>
-        </div>
-        <div className="kpi">
-          <span>기존 API 회귀</span>
-          <b>12/12</b>
-          <Badge tone="green">통과</Badge>
-        </div>
-        <div className="kpi">
-          <span>되돌림</span>
-          <b>{run.rollbacks}회</b>
-          <Badge tone={run.rollbacks ? 'orange' : 'gray'}>{run.rollbacks ? '자동 수정' : '없음'}</Badge>
-        </div>
-        <div className="kpi">
-          <span>구현 → 배포 준비</span>
-          <b>{mins ? `${mins.toFixed(1)}분` : '—'}</b>
-          <Badge tone="gray">기존 95.6분</Badge>
-        </div>
+      <span className="st-ok">배포 승인 완료</span>
+      {g4 && ` · ${g4.by} · ${g4.text}`}
+    </>
+  )
+}
+
+const RING_R = 50
+const RING_C = 2 * Math.PI * RING_R
+
+/** 통과율 원형 — 칸 하나가 항목 하나, 마우스를 올리면 항목 이름 */
+function RingCard({ label, segs, head, sub, action }: { label: string; segs: { ok: boolean; title: string }[]; head: string; sub: ReactNode; action?: ReactNode }) {
+  const n = segs.length
+  const per = n ? RING_C / n : RING_C
+  const len = n > 1 ? per - 3 : per
+  const passed = segs.filter(s => s.ok).length
+  return (
+    <div className="card ring-card">
+      <svg className="ring" viewBox="0 0 120 120" role="img" aria-label={`${label} ${n}개 중 ${passed}개 통과`}>
+        <g transform="rotate(-90 60 60)">
+          {n ? (
+            segs.map((s, k) => (
+              <circle key={k} cx="60" cy="60" r={RING_R} className={s.ok ? 'seg-ok' : 'seg-warn'} strokeDasharray={`${len} ${RING_C}`} strokeDashoffset={-k * per}>
+                <title>{s.title}</title>
+              </circle>
+            ))
+          ) : (
+            <circle cx="60" cy="60" r={RING_R} className="seg-off" />
+          )}
+        </g>
+        <text x="60" y="67" textAnchor="middle">
+          {n ? `${passed}/${n}` : '—'}
+        </text>
+      </svg>
+      <div className="ring-t">
+        <span className="lab">{label}</span>
+        <b>{head}</b>
+        <span className="sub">{sub}</span>
+        {action}
       </div>
-      <div className="res-body">
-        <div>
-          <h4>수용 기준 대조</h4>
-          <ul className="res-ac">
-            {final.map((r, k) => (
-              <li key={r[0]}>
-                <span className="ok-dot">
-                  <Icon name="check" className="ico-xs" />
-                </span>
-                <span className="mono">{r[0]}</span>
-                <span className="res-t">{r[2]}</span>
-                {first[k][1] === 'fail' && <Badge tone="orange">1차 실패 → 통과</Badge>}
-              </li>
-            ))}
-          </ul>
+    </div>
+  )
+}
+
+/** 구현 → 배포 준비 시간: 이번 vs 기존, 같은 눈금의 가로 막대 */
+function CompareCard({ mins }: { mins: number | null }) {
+  const before = METRICS.before.minutes
+  const now = mins ?? 0
+  const max = Math.ceil(Math.max(now, before) / 30) * 30
+  const pct = Math.round((1 - now / before) * 100)
+  const rows = [
+    { k: '이번', v: now, cls: '', title: `이번 · AI 에이전트 ${now.toFixed(1)}분` },
+    { k: '기존', v: before, cls: 'base', title: `기존 방식 ${before}분 · ${METRICS.before.label}` },
+  ]
+  return (
+    <div className="card dash-card">
+      <div className="dash-h">
+        <h3>구현 → 배포 준비 시간</h3>
+        {mins !== null && <b>{pct > 0 ? `${pct}% 단축` : `기존 대비 +${-pct}%`}</b>}
+      </div>
+      <div className="cmp">
+        <div className="cmp-l">
+          {rows.map(r => (
+            <span key={r.k}>{r.k}</span>
+          ))}
         </div>
-        <div>
-          <h4>배포 승인</h4>
-          <p className="res-approve">
-            <b>{g4?.by}</b> 승인 · “{g4?.text}”
-          </p>
-          <p className="muted small">
-            변경 파일 {art.files[0].length}개 · AI 리뷰 지적 {art.findings.length}건 · 위험 {run.risk}
-          </p>
-          <div className="res-btns">
-            <button className="btn primary" onClick={() => ctx.go('report', issue.issue_id)}>
-              상세 검증 리포트
-            </button>
-          </div>
+        <div className="cmp-p">
+          {[0, 1, 2, 3, 4].map(i => (
+            <span key={`g${i}`} className="cmp-g" style={{ left: i === 4 ? 'calc(100% - 1px)' : `${i * 25}%` }} />
+          ))}
+          {[0, 1, 2, 3, 4].map(i => (
+            <span key={`t${i}`} className={`cmp-t t${i}`} style={{ left: `${i * 25}%` }}>
+              {(max * i) / 4}
+              {i === 4 && '분'}
+            </span>
+          ))}
+          {rows.map(r => (
+            <div key={r.k} className="cmp-row" title={r.title}>
+              <span className={`cmp-bar ${r.cls}`} style={{ width: `${(r.v / max) * 100}%` }} />
+              {/* 긴 막대는 값을 막대 안쪽 끝에 — 오른쪽 눈금과 겹치지 않게 */}
+              <span className={`cmp-v ${r.v / max > 0.6 ? 'in' : ''}`} style={{ left: `${(r.v / max) * 100}%` }}>
+                {r.v.toFixed(1)}분
+              </span>
+            </div>
+          ))}
         </div>
       </div>
     </div>
-    <AiResultCard issue={issue} run={run} design={ctx.ai[issue.issue_id]} impl={ctx.impl[issue.issue_id]} review={ctx.review[issue.issue_id]} qa={ctx.qa[issue.issue_id] ?? []} log={ctx.aiLog[issue.issue_id] ?? []} />
-    </>
+  )
+}
+
+/** 공정 소요 시간: AI·실행기 작업과 사람 승인 대기를 시간 순서대로 이어 붙인 띠 */
+function TimeCard({ run }: { run: Run }) {
+  const groups: { wait: boolean; s: number; stages: StageId[] }[] = []
+  for (const h of run.history) {
+    if (!h.duration_s) continue
+    const wait = h.kind === 'gate'
+    const last = groups[groups.length - 1]
+    if (last && last.wait === wait) {
+      last.s += h.duration_s
+      last.stages.push(h.stage)
+    } else groups.push({ wait, s: h.duration_s, stages: [h.stage] })
+  }
+  const total = groups.reduce((a, g) => a + g.s, 0)
+  const sum = (wait: boolean) => groups.filter(g => g.wait === wait).reduce((a, g) => a + g.s, 0)
+  const has = (g: (typeof groups)[number], s: StageId) => g.stages.includes(s)
+  const name = (g: (typeof groups)[number]) =>
+    g.wait ? STAGE_INFO[g.stages[0]].name : has(g, 'S07') ? '구현·검증' : has(g, 'S02') ? '설계' : has(g, 'S09') ? '검증' : has(g, 'S13') ? '배포 준비' : STAGE_INFO[g.stages[0]].name
+  const m = (s: number) => `${(s / 60).toFixed(1)}분`
+  return (
+    <div className="card dash-card">
+      <div className="dash-h">
+        <h3>공정 소요 시간</h3>
+        <b>총 {m(total)}</b>
+      </div>
+      <div className="tl">
+        <div className="tl-bar">
+          {groups.map((g, k) => (
+            <span key={k} className={g.wait ? 'wait' : ''} style={{ flexGrow: g.s }} title={`${name(g)} · ${g.wait ? '사람' : 'AI·실행기'} ${m(g.s)}`} />
+          ))}
+        </div>
+        <div className="tl-lab">
+          {groups.map((g, k) => (
+            <div key={k} style={{ flexGrow: g.s }}>
+              {g.s / total >= 0.07 && (
+                <>
+                  <span>{name(g)}</span>
+                  <span>{m(g.s)}</span>
+                </>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+      <div className="tl-leg">
+        <span>
+          <i />
+          AI · 실행기 작업 {m(sum(false))}
+        </span>
+        <span>
+          <i className="wait" />
+          사람 승인 대기 {m(sum(true))}
+        </span>
+      </div>
+    </div>
   )
 }

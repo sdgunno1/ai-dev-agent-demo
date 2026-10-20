@@ -259,6 +259,62 @@ ol, ul { padding: 0; list-style: none; }
 .ghost-kpi b { font-size: 30px; font-weight: 600; color: var(--fill); line-height: 1.15; }
 .result-empty p { grid-column: 1 / -1; border-top: .5px solid var(--sep); padding: 16px 24px; color: var(--text-3); font-size: 13px; }
 
+/* ── ③ 결과 대시보드: 통과율 원형 · 시간 막대 ── */
+.st-ok { display: inline-flex; align-items: center; gap: 6px; color: #1e7f3a; font-weight: 600; }
+.st-ok::before { content: ''; width: 8px; height: 8px; border-radius: 50%; background: var(--green); }
+.dash-rings { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.ring-card { display: flex; align-items: center; gap: 20px; padding: 22px 24px; }
+.ring { width: 112px; height: 112px; flex: none; }
+.ring circle { fill: none; stroke-width: 12; }
+.ring .seg-ok { stroke: var(--green); }
+.ring .seg-warn { stroke: #ffc36b; }
+.ring .seg-off { stroke: var(--fill); }
+.ring text { font-family: var(--ui); font-size: 22px; font-weight: 600; fill: var(--text); letter-spacing: -.02em; }
+.ring-t { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; min-width: 0; word-break: keep-all; }
+.ring-t .lab { font-size: 13px; color: var(--text-2); }
+.ring-t b { font-size: 16px; font-weight: 600; letter-spacing: -.02em; }
+.ring-t .sub { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text-2); }
+.warn-mk { width: 14px; height: 14px; border-radius: 50%; background: #ffc36b; color: #5c3600; font-size: 10px; font-weight: 700; display: inline-grid; place-items: center; flex: none; }
+.link-btn { border: 0; background: none; padding: 0; margin-top: 2px; color: #0062cc; font-size: 12.5px; font-weight: 500; }
+.link-btn:hover { text-decoration: underline; }
+.dash-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.dash-card { padding: 22px 24px; display: flex; flex-direction: column; gap: 18px; }
+.dash-h { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.dash-h h3, .dash-h b { font-size: 15px; font-weight: 600; letter-spacing: -.02em; }
+.cmp { display: grid; grid-template-columns: 56px minmax(0, 1fr); column-gap: 12px; }
+.cmp-l, .cmp-p { display: flex; flex-direction: column; gap: 14px; padding-bottom: 24px; }
+.cmp-l span { height: 24px; line-height: 24px; font-size: 12.5px; color: #3a3a3c; }
+.cmp-p { position: relative; min-width: 0; }
+.cmp-g { position: absolute; top: 0; bottom: 24px; width: 1px; background: var(--sep); }
+.cmp-g:first-child { background: var(--hair); }
+.cmp-t { position: absolute; bottom: 0; font-size: 11px; color: var(--text-2); white-space: nowrap; transform: translateX(-50%); }
+.cmp-t.t0 { transform: none; }
+.cmp-t.t4 { transform: translateX(-100%); }
+.cmp-row { position: relative; height: 24px; }
+.cmp-bar { position: absolute; left: 0; top: 0; height: 24px; border-radius: 0 4px 4px 0; background: var(--blue); }
+.cmp-bar.base { background: #c7c7cc; }
+.cmp-v { position: absolute; top: 0; margin-left: 8px; line-height: 24px; font-size: 13px; font-weight: 600; white-space: nowrap; }
+.cmp-v.in { margin: 0 8px 0 0; transform: translateX(-100%); }
+.tl { display: flex; flex-direction: column; gap: 10px; margin-top: 4px; }
+.tl-bar { display: flex; gap: 2px; height: 24px; }
+.tl-bar span { flex: 1 1 0; min-width: 4px; background: var(--blue); }
+.tl-bar span.wait { background: #c7c7cc; }
+.tl-bar span:first-child { border-radius: 4px 0 0 4px; }
+.tl-bar span:last-child { border-radius: 0 4px 4px 0; }
+.tl-lab { display: flex; gap: 2px; font-size: 12px; line-height: 1.4; }
+.tl-lab div { flex: 1 1 0; min-width: 4px; display: flex; flex-direction: column; white-space: nowrap; padding-left: 4px; }
+.tl-lab div:first-child { padding-left: 0; }
+.tl-lab span:first-child { color: #3a3a3c; }
+.tl-lab span + span { color: var(--text-2); }
+.tl-leg { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 12.5px; color: #3a3a3c; }
+.tl-leg span { display: inline-flex; align-items: center; gap: 6px; }
+.tl-leg i { width: 10px; height: 10px; border-radius: 3px; background: var(--blue); }
+.tl-leg i.wait { background: #c7c7cc; }
+@media (max-width: 980px) {
+  .dash-rings { grid-template-columns: 1fr; }
+  .dash-row { grid-template-columns: 1fr; }
+}
+
 /* ── 리포트 · 모델 공통 ── */
 .page-h { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
 .page-h h1 { font-size: 30px; font-weight: 600; letter-spacing: -.035em; }
