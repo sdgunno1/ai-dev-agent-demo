@@ -340,7 +340,7 @@ function Flow({ run, ai }: { run?: Run; ai?: { marks: Set<number>; working?: num
         </svg>
         {arcs.map(([from, to]) => (
           <span key={`l${from}-${to}`} className="arc-label" style={{ left: `${(xPct(from) + xPct(to)) / 2}%` }}>
-            <Icon name="back" className="ico-xs" /> 실패 → 되돌림
+            실패 ← 되돌림
           </span>
         ))}
       </div>
