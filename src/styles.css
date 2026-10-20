@@ -126,7 +126,7 @@ ol, ul { padding: 0; list-style: none; }
 /* ── ② 흐름도 ── */
 .flow { position: relative; padding: 8px 16px 20px; border-bottom: .5px solid var(--sep); }
 .flow-arcs { position: relative; height: 56px; margin: 0 0 -6px; }
-.flow-arcs svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+.flow-arcs > svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
 .arc { fill: none; stroke: var(--orange); stroke-width: 2; stroke-dasharray: 5 5; animation: dash 1s linear infinite; }
 @keyframes dash { to { stroke-dashoffset: -20; } }
 .arc-label { position: absolute; top: 2px; transform: translateX(-50%); display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; font-weight: 600; color: var(--orange); background: var(--surface); padding: 0 8px; border-radius: 999px; white-space: nowrap; }
